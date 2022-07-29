@@ -1,0 +1,124 @@
+---
+title: "Supplementary Note SPOTS analysis of murine breast cancer"
+author: Steve X. Niu^[Tri-Institutional Training Program in Computational Biology
+  and Medicine, xin2001@med.cornell.edu]
+date: 'Last Run: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    df_print: kable
+    theme: united
+  pdf_document: default
+---
+<style type="text/css">
+h1.title {
+  font-size: 34px;
+  color: DarkRed;
+  text-align: justify;
+}
+body, td {
+  font-size: 16px;
+  text-align: justify;
+}
+code.r{
+  font-size: 20px;
+  text-align: justify;
+}
+pre {
+  font-size: 14px
+  text-align: justify;
+}
+</style>
+***
+
+```{r setup, include=FALSE}
+options(width = 150)
+knitr::opts_chunk$set(
+  tidy = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+1. Load Data
+This markdown file contains the scRNA-seq analysis for the paper titled **Integrated protein and transcriptome high-throughput spatial profiling**. The data used for this analysis can be found under the GEO repository GSE198353. 
+```{r load, fig.height=4, fig.width=6}
+# install Seurat v4.0.0 and spots
+if (!requireNamespace("remotes", quietly = TRUE))
+  install.packages("remotes")
+if (!requireNamespace("Seurat", quietly = TRUE) | utils::packageVersion("Seurat") < "4.0.0")
+  remotes::install_version("Seurat", version = "4.0.0")
+if (!requireNamespace("spots", quietly = TRUE))
+  install.packages("spots")
+
+# load data
+library(Seurat)
+library(spots)
+
+mmtv_gex <- Read10X_h5('GSE198353_mmtv_pymt_GEX_filtered_feature_bc_matrix.h5')
+mmtv_adt <- read.csv('GSE198353_mmtv_pymt_ADT.csv.gz', header = TRUE, row.names = 1, check.names = FALSE)
+mmtv_image <- Read10X_Image('GSE198353_mmtv_pymt_spatial')
+mmtv <- CreateSeuratObject(mmtv_gex, assay = "RNA", project = "MMTV")
+mmtv_adt <- CreateSeuratObject(mmtv_adt, assay = "CITE", project = "MMTV")
+mmtv@assays$CITE <- mmtv_adt@assays$CITE
+mmtv$nCount_CITE <- mmtv_adt$nCount_CITE
+mmtv$nFeature_CITE <- mmtv_adt$nFeature_CITE
+mmtv_image@key <- "A"
+mmtv@images <- list(A = mmtv_image)
+SpatialDimPlot(mmtv)
+```
+
+2. Data normalization
+```{r normalization, fig.height=8, fig.width=10}
+mmtv <- NormalizeData(mmtv, assay = "RNA", verbose = FALSE)
+mmtv <- NormalizeData(mmtv, assay = "CITE", verbose = FALSE)
+DefaultAssay(mmtv) <- "CITE"
+mmtv <- ScaleData(mmtv, verbose = FALSE)
+SpatialFeaturePlot(mmtv,features = c("CD326","Podoplanin","I-A/I-E",
+                                      "F4/80", "CD11c","CD4"), ncol = 3, min.cutoff = "q25")
+```
+
+2. Spatial Component Analysis and Clustering
+```{r SCA, fig.height=8, fig.width=10}
+Visium.hnn.dist <- LoadData("~/Downloads", "Visium.HNN")
+mmtv.hnn.dist <- VisiumHnn("~/Downloads/", Cells(mmtv))
+mmtv.hnn <- HnnNeighbor(mmtv.hnn.dist, k = 37, include.self = FALSE)
+mmtv.hnn.weight <- HnnWeight(mmtv.hnn$dist.mat, dist.k = 3, sigma = 1)
+mmtv.sca <- SCA(X = Matrix::t(mmtv@assays$CITE@data), 
+                W = mmtv.hnn.weight, 
+                scaled.data = t(mmtv@assays$CITE@scale.data),
+                n.eigen = 30)
+mmtv@reductions[["sca"]] <- CreateDimReducObject(embeddings = mmtv.sca$X, 
+                                                 loadings = mmtv.sca$rotation, 
+                                                 stdev = mmtv.sca$eigenvalues, 
+                                                 key = "SC_", assay = "CITE")
+mmtv <- FindNeighbors(mmtv, reduction = "sca", dims = 1:15)
+mmtv <- FindClusters(mmtv, resolution = 0.3)
+mmtv <- RenameIdents(mmtv, '0' = 'Fibroblast-high',
+                     '1' = 'Fibroblast-low',
+                     '2' = 'M2-MF',
+                     '3' = 'Immune-enriched (Peritumor)',
+                     '4' = 'M1-MF')
+mmtv@active.ident = factor(mmtv@active.ident, levels = c('Fibroblast-high', 'Fibroblast-low','M1-MF',
+                                                         'M2-MF','Immune-enriched (Peritumor)'))
+SpatialDimPlot(mmtv, label = TRUE, repel = TRUE)
+```
+
+3. Differentially expressed ADTs
+```{r DE.ADT, fig.height=8, fig.width=8}
+adt.markers <- FindAllMarkers(mmtv, only.pos = TRUE, logfc.threshold = 0.2, verbose = FALSE)
+DoHeatmap(mmtv, adt.markers$gene, assay = "CITE", angle = 45)
+```
+
+4. Differentially expressed mRNAs
+```{r DE.mRNA, fig.height=12, fig.width=8}
+DefaultAssay(mmtv) = "RNA"
+mrna.markers <- FindAllMarkers(mmtv, only.pos = TRUE, verbose = FALSE)
+mmtv.avg <- AverageExpression(mmtv, assays = "RNA", return.seurat = TRUE)
+DoHeatmap(mmtv.avg, mrna.markers$gene, draw.lines = FALSE, assay = "RNA", angle = 45)
+```
+
+5. Session info
+```{r session}
+# Session info
+print(sessionInfo())
+```

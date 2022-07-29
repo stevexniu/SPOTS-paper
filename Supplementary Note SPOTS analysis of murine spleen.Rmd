@@ -1,0 +1,134 @@
+---
+title: "Supplementary Note SPOTS analysis of murine spleen"
+author: Steve X. Niu^[Tri-Institutional Training Program in Computational Biology
+  and Medicine, xin2001@med.cornell.edu]
+date: 'Last Run: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    df_print: kable
+    theme: united
+  pdf_document: default
+---
+<style type="text/css">
+h1.title {
+  font-size: 34px;
+  color: DarkRed;
+  text-align: justify;
+}
+body, td {
+  font-size: 16px;
+  text-align: justify;
+}
+code.r{
+  font-size: 20px;
+  text-align: justify;
+}
+pre {
+  font-size: 14px
+  text-align: justify;
+}
+</style>
+***
+
+```{r setup, include=FALSE}
+options(width = 150)
+knitr::opts_chunk$set(
+  tidy = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+1. Load Data
+This markdown file contains the scRNA-seq analysis for the paper titled **Integrated protein and transcriptome high-throughput spatial profiling**. The data used for this analysis can be found under the GEO repository GSE198353. 
+```{r load, fig.height=6, fig.width=8}
+# install Seurat v4.0.0
+if (!requireNamespace("remotes", quietly = TRUE))
+  install.packages("remotes")
+if (!requireNamespace("Seurat", quietly = TRUE) | utils::packageVersion("Seurat") < "4.0.0")
+  remotes::install_version("Seurat", version = "4.0.0")
+
+# load data
+library(Seurat)
+# replicate 1
+rep_1_data <- Read10X_h5('spleen_rep_1_filtered_feature_bc_matrix.h5')
+rep_1_image <- Read10X_Image('GSE198353_spleen_replicate_1_spatial')
+rep_1 <- CreateSeuratObject(rep_1_data$`Gene Expression`, assay = "RNA", project = "Rep_1")
+rep_1_CITE <- CreateSeuratObject(rep_1_data$`Antibody Capture`, assay = "CITE", project = "Rep_1")
+rep_1@assays$CITE <- rep_1_CITE@assays$CITE
+rep_1$nCount_CITE <- rep_1_CITE$nCount_CITE
+rep_1$nFeature_CITE <- rep_1_CITE$nFeature_CITE
+rep_1_image@assay <- c("RNA", "CITE")
+rep_1_image@key <- "Rep_1"
+rep_1@images <- list(Rep_1 = rep_1_image)
+# replicate 2
+rep_2_data <- Read10X_h5('spleen_rep_2_filtered_feature_bc_matrix.h5')
+rep_2_image <- Read10X_Image('GSE198353_spleen_replicate_2_spatial')
+rep_2 <- CreateSeuratObject(rep_2_data$`Gene Expression`, assay = "RNA", project = "Rep_2")
+rep_2_CITE <- CreateSeuratObject(rep_2_data$`Antibody Capture`, assay = "CITE", project = "Rep_2")
+rep_2@assays$CITE <- rep_2_CITE@assays$CITE
+rep_2$nCount_CITE <- rep_2_CITE$nCount_CITE
+rep_2$nFeature_CITE <- rep_2_CITE$nFeature_CITE
+rep_2_image@assay <- c("RNA", "CITE")
+rep_2_image@key <- "Rep_2"
+rep_2@images <- list(Rep_2 = rep_2_image)
+# merge 
+spleen <- merge(rep_1, rep_2, add.cell.ids = c("Rep_1", "Rep_2"), project = "Spleen")
+SpatialDimPlot(spleen, images = c("Rep_1", "Rep_2"))
+```
+
+2. Data normalization
+```{r normalization, fig.height=8, fig.width=18}
+DefaultAssay(spleen) = "CITE"
+spleen = NormalizeData(spleen, assay = "RNA", verbose = FALSE)
+spleen = NormalizeData(spleen, normalization.method = "CLR", assay = "CITE", margin = 2, verbose = FALSE)
+spleen <- ScaleData(spleen, verbose = FALSE)
+p1 <- SpatialFeaturePlot(spleen,features = c("CD3","CD4","CD8",
+                                             "CD19","B220-CD45R","IgD",
+                                             "F4-80", "CD163", "CD68"), ncol = 3, images = c("Rep_1"))
+p2 <- SpatialFeaturePlot(spleen,features = c("CD3","CD4","CD8",
+                                             "CD19","B220-CD45R","IgD",
+                                             "F4-80", "CD163", "CD68"), ncol = 3, images = c("Rep_2"))
+p1 - p2
+```
+
+2. Dimensionality Reduction and Clustering
+```{r clustering, fig.height=6, fig.width=8}
+spleen <- RunPCA(spleen, features = rownames(spleen))
+spleen <- FindNeighbors(spleen, dims = 1:10)
+spleen <- FindClusters(spleen, resolution = 0.2, verbose = FALSE)
+SpatialDimPlot(spleen, images = c("Rep_1","Rep_2"))
+```
+
+```{r clean 1, fig.height=5, fig.width=10}
+# Cluster 4 represents low-quality spatial barcodes
+# Cluster 3 represents epithelial enriched tissue borders
+VlnPlot(spleen, c("nCount_CITE", "nFeature_CITE", "EpCAM"))
+```
+
+```{r clean 2, fig.height=15, fig.width=20}
+# rename clusters
+spleen <- subset(spleen, subset = CITE_snn_res.0.2 %in% c(3,4), invert = TRUE)
+spleen <- RenameIdents(spleen, '0' = "Macrophage-enriched", '1' = "B cell-enriched", '2' = "T cell-enriched")
+SpatialDimPlot(spleen, images = c("Rep_1","Rep_2"))
+```
+
+3. Differentially expressed ADTs
+```{r DE.ADT, fig.height=8, fig.width=8}
+adt.markers <- FindAllMarkers(spleen, only.pos = TRUE, logfc.threshold = 0.2, verbose = FALSE)
+DoHeatmap(spleen, adt.markers$gene, assay = "CITE", angle = 45)
+```
+
+4. Differentially expressed mRNAs
+```{r DE.mRNA, fig.height=12, fig.width=8}
+DefaultAssay(spleen) = "RNA"
+mrna.markers <- FindAllMarkers(spleen, only.pos = TRUE, verbose = FALSE)
+spleen.avg <- AverageExpression(spleen, assays = "RNA", return.seurat = TRUE)
+DoHeatmap(spleen.avg, mrna.markers$gene, draw.lines = FALSE, assay = "RNA", angle = 45)
+```
+
+5. Session info
+```{r session}
+# Session info
+print(sessionInfo())
+```
